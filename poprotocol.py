@@ -1,7 +1,7 @@
 # poprotocol.py
 # Pokemon Online protocol implemented in Twisted protocol
 #
-# (c) Toni Fadjukoff 2011
+# (c) Toni Fadjukoff 2011 - 2012
 # Licensed under GPL 3.
 # See LICENSE.txt for details
 
@@ -31,7 +31,10 @@ class PODecoder(object):
         if fmt[0] != "!":
             fmt = "!%s" % fmt
         l = struct.calcsize(fmt)
-        n = struct.unpack(fmt, cmd[i:i+l])[0]
+        if len(cmd) >= i+l:
+            n = struct.unpack(fmt, cmd[i:i+l])[0]
+        else:
+            n = 0
         i+=l
         return (n,i)
 
@@ -40,6 +43,9 @@ class PODecoder(object):
         return (b > 0, i)
 
     def decode_bytes(self, cmd, i):
+        if len(cmd) < i+4:
+            return ("", i)
+
         l = struct.unpack("!I", cmd[i:i+4])[0]
         i+=4
         if l == 0xFFFFFFFF:
@@ -50,6 +56,9 @@ class PODecoder(object):
         return (b,i)
 
     def decode_string(self, cmd, i):
+        if len(cmd) < i+4:
+            return ("", i)
+
         l = struct.unpack("!I", cmd[i:i+4])[0]
         i+=4
         if l == 0xFFFFFFFF:
@@ -208,7 +217,7 @@ class PODecoder(object):
 
     def decode_BattleDynamicInfo(self, cmd, i):
         info = BattleDynamicInfo()
-        for k in xrange(6):
+        for k in xrange(7):
             info.boosts[k], i = self.decode_number(cmd, i, "b")
         info.flags, i = self.decode_number(cmd, i, "B")
         return (info, i)
@@ -407,6 +416,10 @@ class POClient(PODecoder):
         tosend = struct.pack('!Bi', NetworkEvents['SpectateBattle'], battleid)
         self.send(tosend)
 
+    def spectatingBattleFinished(self, battleid):
+        tosend = struct.pack('!Bi', NetworkEvents['SpectatingBattleFinished'], battleid)
+        self.send(tosend)
+
     def battleCommand(self, battleid, slot, battlecommand):
         tosend = struct.pack('!BiB', NetworkEvents['BattleCommand'], battleid, slot) + self.encode_BattleChoice(battlecommand)
         self.send(tosend)
@@ -415,12 +428,20 @@ class POClient(PODecoder):
         tosend = struct.pack('!Bii', NetworkEvents['BattleFinished'], battleid, result)
         self.send(tosend)
 
+    def battleChat(self, battleid, message):
+        tosend = struct.pack('!BI', NetworkEvents['BattleChat'], battleid) + self.encode_string(message)
+        self.send(tosend)
+
+    def spectatingBattleChat(self, battleid, message):
+        tosend = struct.pack('!BI', NetworkEvents['SpectatingBattleChat'], battleid) + self.encode_string(message)
+        self.send(tosend)
+
     def sendPM(self, playerid, message):
-        tosend = struct.pack('B', NetworkEvents['SendPM']) + struct.pack("!I", playerid) + self.encode_string(message)
+        tosend = struct.pack('!BI', NetworkEvents['SendPM'], playerid) + self.encode_string(message)
         self.send(tosend)
 
     def sendChannelMessage(self, chanid, message):
-        tosend = struct.pack('B', NetworkEvents['ChannelMessage']) + struct.pack("!I", chanid) + self.encode_string(message)
+        tosend = struct.pack('!BI', NetworkEvents['ChannelMessage'], chanid) + self.encode_string(message)
         self.send(tosend)
 
     def joinChannel(self, channelname):
@@ -485,10 +506,10 @@ class POClient(PODecoder):
 
     @battleCommandParser
     def on_Battle_SendOut(self, bid, spot, bytes):
-        silent, i = self.decode_number(bytes, 0, "B")
+        silent, i = self.decode_bool(bytes, 0)
         prevIndex, i = self.decode_number(bytes, i, "B")
         poke, i = self.decode_ShallowBattlePoke(bytes, i)
-        self.onBattleSendOut(bid, spot, silent > 0, prevIndex, poke)
+        return (silent, prevIndex, poke)
 
     def onBattleSendOut(self, bid, spot, silent, prevIndex, poke):
         """
@@ -528,7 +549,7 @@ class POClient(PODecoder):
 
     @battleCommandParser
     def on_Battle_BeginTurn(self, bid, spot, bytes):
-        turn, i = self.decode_number(bytes, 0, "!H")
+        turn, i = self.decode_number(bytes, 0, "i")
         return (turn,)
 
     def onBattleBeginTurn(self, bid, spot, turn):
@@ -807,7 +828,7 @@ class POClient(PODecoder):
 
     @battleCommandParser
     def on_Battle_DynamicInfo (self, bid, spot, bytes):
-        info, i = self.decodeBattleDynamicInfo(bytes, 0)
+        info, i = self.decode_BattleDynamicInfo(bytes, 0)
         return (info,)
 
     @battleCommandParser
@@ -870,7 +891,7 @@ class POClient(PODecoder):
         return (clock,)
 
     @battleCommandParser
-    def on_Battle_ClocakStop (self, bid, spot, bytes):
+    def on_Battle_ClockStop (self, bid, spot, bytes):
         clock, i = self.decode_number(bytes, 0, "!H")
         return (clock,)
 
@@ -1395,7 +1416,7 @@ NetworkEvents = {
         'CPUnban': 26,
         'SpectateBattle': 27,
         'SpectatingBattleMessage': 28,
-        'SpectatingBattleChat': 30,
+        'SpectatingBattleChat': 29,
         'SpectatingBattleFinished': 30,
         'LadderChange': 31,
         'ShowTeamChange': 32,
@@ -1683,7 +1704,7 @@ class BattleStats(object):
 
 class BattleDynamicInfo(object):
     def __init__(self):
-        self.boosts = [0]*5
+        self.boosts = [0]*7
         self.flags = 0
 
 class ShallowBattlePoke(object):
