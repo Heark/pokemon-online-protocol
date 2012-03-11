@@ -667,6 +667,21 @@ class POClient(PODecoder):
     @battleCommandParser
     def on_Battle_StatusMessage(self, bid, spot, bytes):
         statusmessage, i = self.decode_number(bytes, 0, "b")
+
+        # StatusFeeling
+        statusmessage = {
+            0: "FeelConfusion",
+            1: "HurtConfusion",
+            2: "FreeConfusion",
+            3: "PrevParalysed",
+            4: "PrevFrozen",
+            5: "FreeFrozen",
+            6: "FeelAsleep",
+            7: "FreeAsleep",
+            8: "HurtBurn",
+            9: "HurtPoison"
+        }.get(statusmessage, "Unknown")
+ 
         return (statusmessage,)
 
     def onBattleStatusMessage(self, bid, spot, statusmessage):
@@ -677,11 +692,13 @@ class POClient(PODecoder):
 
     @battleCommandParser
     def on_Battle_Failed(self, bid, spot, bytes):
-        return ()
+        silent, i = self.decode_bool(bytes, 0)
+        return (silent,)
 
-    def onBattleFailed(self, bid, spot):
+    def onBattleFailed(self, bid, spot, silent):
         """
         Failed - a move failed
+        silent : bool - a silent failure
         """
 
     @battleCommandParser
@@ -762,6 +779,23 @@ class POClient(PODecoder):
     def on_Battle_WeatherMessage(self, bid, spot, bytes):
         wstatus, i = self.decode_number(bytes, 0, "B")
         weather, i = self.decode_number(bytes, i, "B")
+
+        # WeatherM
+        wstatus = {
+           0: "ContinueWeather",
+           1: "EndWeather",
+           2: "HurtWeather",
+        }.get(wstatus, "Unknown")
+
+        # Weather
+        weather = {
+           0: "NormalWeather",
+           1: "Hail",
+           2: "Rain",
+           3: "SandStorm",
+           4: "Sunny"
+        }
+
         return (wstatus, weather)
 
     def onBattleWeatherMessage(self, bid, spot, wstatus, weather):
@@ -812,7 +846,7 @@ class POClient(PODecoder):
     @battleCommandParser
     def on_Battle_BattleEnd(self, bid, spot, bytes):
         res, i = self.decode_number(bytes, 0, "b")
-        return (res,)
+        return (BattleResult[res],)
 
     @battleCommandParser
     def on_Battle_BlankMessage(self, bid, spot, bytes):
@@ -1196,7 +1230,7 @@ class POClient(PODecoder):
         result, i = self.decode_number(cmd, i, "!B")
         winner, i = self.decode_number(cmd, i, "!i")
         loser, i = self.decode_number(cmd, i, "!i")
-        outcome = ["Forfeit", "Win", "Tie", "Close"][result]
+        outcome = BattleResult[result]
         self.onBattleFinished(battleid, outcome, winner, loser)
 
     def onBattleFinished(self, battleid, outcome, winner, loser):
@@ -1463,6 +1497,9 @@ ChallengeDesc = {
      'ChallengeDescLast': 7
 };
 
+
+BattleResult = ["Forfeit", "Win", "Tie", "Close"]
+
 BattleCommands = {   
         'SendOut': 0,
         'SendBack': 1,
@@ -1703,9 +1740,22 @@ class BattleStats(object):
         self.stats = [0]*6
 
 class BattleDynamicInfo(object):
+
     def __init__(self):
         self.boosts = [0]*7
         self.flags = 0
+
+    def get_flags(self):
+        return [self.Flags[flag] for flag in self.Flags if (self.flags & flag) > 0]
+
+    Flags = {
+        1:  "Spikes",
+        2:  "SpikesLV2",
+        4:  "SpikesLV3",
+        8:  "StealthRock",
+        16: "ToxicSpikes",
+        32: "ToxicSpikesLV2" }
+
 
 class ShallowBattlePoke(object):
     def __init__(self):
