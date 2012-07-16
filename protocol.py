@@ -1,17 +1,9 @@
 # poprotocol.py
-# Pokemon Online protocol implemented in Twisted protocol
+# Pokemon Online protocol implemented in python
 #
 # (c) Toni Fadjukoff 2011 - 2012
 # Licensed under GPL 3.
 # See LICENSE.txt for details
-
-have_twisted = True
-try:
-    from twisted.protocols.basic import Int16StringReceiver
-except ImportError:
-    have_twisted = False
-except:
-    have_twisted = False
 
 import time
 import socket
@@ -1405,21 +1397,6 @@ class POClient(PODecoder):
         Event telling us of a server wide HTML message
         message - unicode : the HTML message
         """
-
-# Implement on top of Int16Receiver if we have twisted.  
-if have_twisted:
-    class RegistryProtocol(Int16StringReceiver, PORegistryClient):
-        def __init__(self):
-            PORegistryClient.__init__(self)
-
-    class POProtocol(Int16StringReceiver, POClient):
-        def __init__(self): 
-            POClient.__init__(self)
-  
-        def native_send(self, data): 
-            self.transport.write(data)
-
-# Dict for NetworkEvent codes
 NetworkEvents = {
         'WhatAreYou': 0,
         'WhoAreYou': 1,
