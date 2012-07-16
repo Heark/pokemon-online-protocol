@@ -13,7 +13,7 @@ import codecs
 class PODecoder(object):
 
     def __init__(self):
-        self.codec = codecs.lookup("utf_16_be")
+        self.codec = codecs.lookup("utf_8")
 
     #### DECODING METHODS
 
@@ -59,7 +59,6 @@ class PODecoder(object):
             s = cmd[i:i+l]
             s = self.codec.decode(s)[0]
             i += l
-        #print "Extracted \"%s\" (len %d)" % (s,l)
         return (s,i)
 
     def decode_color(self, cmd, i):
@@ -307,6 +306,9 @@ class PORegistryClient(PODecoder):
     def stringReceived(self, string):
         event = ord(string[0])
         i = 1
+        if event == NetworkEvents['Announcement']:
+             ann, _ = self.decode_string(string, i)
+             self.onRegistryAnnouncement(ann)
         if event == NetworkEvents["PlayersList"]:
              name, i = self.decode_string(string, i)
              desc, i = self.decode_string(string, i)
@@ -314,11 +316,17 @@ class PORegistryClient(PODecoder):
              ip, i = self.decode_string(string, i)
              maxp, i = self.decode_number(string, i, "h")
              port, i = self.decode_number(string, i, "h")
-             self.onPlayersList(name, desc, nump, ip, maxp, port)
+             protected, i = self.decode_number(string, i, "b")
+             self.onPlayersList(name, desc, nump, ip, maxp, port, bool(protected))
         elif event == NetworkEvents["ServerListEnd"]:
              self.onServerListEnd()
 
-    def onPlayersList(self, name, desc, nump, ip, maxp, port):
+    def onRegistryAnnouncement(self, ann):
+        """
+        Tells about global announcement
+        """
+
+    def onPlayersList(self, name, desc, nump, ip, maxp, port, protected):
         """
         Indicates that the registry sent us infornation about one server
         """
