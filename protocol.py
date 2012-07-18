@@ -9,120 +9,124 @@ import time
 import socket
 import struct
 import codecs
+import functools
+
+def version_controlled(version):
+    """
+    Wraps a function for version control:
+    This way we do not have to worry about reading too little if the structure has been extended.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapped(self, *args):
+            structure_length = self.decode_number("H")
+            j = self.i
+            structure_version = self.decode_number("B")
+            if version != structure_version:
+                print("Warning: we have a different version ({}) of {} ({}) than server".format(version, func.__name__, strcture_version))
+            res = func(self, *args)
+            self.i = j+structure_length
+            return res
 
 class PODecoder(object):
 
     def __init__(self):
         self.codec = codecs.lookup("utf_8")
+        self.i = 0
+        self.cmd = cmd
 
     #### DECODING METHODS
 
-    def decode_number(self, cmd, i, fmt):
+    def decode_number(self, fmt):
         # See http://docs.python.org/library/struct.html#format-characters
         # for explanations of fmt
         if fmt[0] != "!":
             fmt = "!%s" % fmt
         l = struct.calcsize(fmt)
-        if len(cmd) >= i+l:
-            n = struct.unpack(fmt, cmd[i:i+l])[0]
+        if len(self.cmd) >= self.i+l:
+            n = struct.unpack(fmt, self.cmd[self.i:self.i+l])[0]
         else:
             n = 0
-        i+=l
-        return (n,i)
+        self.i+=l
+        return n
 
-    def decode_bool(self, cmd, i):
-        (b, i) = self.decode_number(cmd, i, "B")
-        return (b > 0, i)
+    def decode_bool(self):
+        b = self.decode_number("B")
+        return b > 0
 
-    def decode_bytes(self, cmd, i):
-        if len(cmd) < i+4:
-            return ("", i)
-
-        l = struct.unpack("!I", cmd[i:i+4])[0]
-        i+=4
+    def decode_bytes(self):
+        l = self.decode_number("I")
         if l == 0xFFFFFFFF:
             b = ""
         else:
-            b = cmd[i:i+l]
-            i += l
-        return (b,i)
+            b = self.cmd[self.i:self.i+l]
+            self.i += l
+        return b
 
-    def decode_string(self, cmd, i):
-        if len(cmd) < i+4:
-            return ("", i)
-
-        l = struct.unpack("!I", cmd[i:i+4])[0]
-        i+=4
+    def decode_string(self):
+        l = self.decode_number("I")
         if l == 0xFFFFFFFF:
             s = ""
         else:
-            s = cmd[i:i+l]
+            s = self.cmd[self.i:self.i+l]
             s = self.codec.decode(s)[0]
-            i += l
-        return (s,i)
+            self.i += l
+        return s
 
-    def decode_ProtocolVersion(self, cmd, i):
-        version, i = self.decode_number(cmd, i, "!H")
-        subversion, i = self.decode_number(cmd, i, "!H")
-        return ((version,subversion),i)
+    def decode_ProtocolVersion(self):
+        version = self.decode_number("H")
+        subversion = self.decode_number("H")
+        return (version,subversion)
 
-    def decode_color(self, cmd, i):
+    def decode_color(self):
         color = Color()
-        color.color_spec, i = self.decode_number(cmd, i, "!b")
-        color.alpha, i = self.decode_number(cmd, i, "!H")
-        color.red, i = self.decode_number(cmd, i, "!H")
-        color.green, i = self.decode_number(cmd, i, "!H")
-        color.blue, i = self.decode_number(cmd, i, "!H")
-        color.pad, i = self.decode_number(cmd, i, "!H")
-        return (color, i)
+        color.color_spec = self.decode_number("b")
+        color.alpha = self.decode_number("H")
+        color.red = self.decode_number("H")
+        color.green = self.decode_number("H")
+        color.blue = self.decode_number("H")
+        color.pad = self.decode_number("H")
+        return color
 
-    def decode_PokeUniqueId(self, cmd, i):
+    def decode_PokeUniqueId(self):
         uid = PokeUniqueId()
-        uid.pokenum, i = self.decode_number(cmd, i, "!H")
-        uid.subnum, i = self.decode_number(cmd, i, "!B")
-        return (uid, i)
+        uid.pokenum = self.decode_number("H")
+        uid.subnum = self.decode_number("B")
+        return uid
 
-    def decode_VersionControl(self, cmd, i):
-        l, i  = self.decode_number(cmd, i, "!H")
-        v, _ = self.decode_number(cmd, i, "B")
-        i += l
-        return {'version': v, 'data': cmd[i+1:i+l]}, i
-
+    @version_controlled(0)
     def decode_PlayerInfo(self, cmd, i):
-        version, i = self.decode_VersionControl(cmd, i)
-        if version['version'] != 0:
-            warn("PlayerInfo out of date")
         player = PlayerInfo()
-        player.id, i = self.decode_number(cmd, i, "!i")
+        player.id = self.decode_number("i")
         # network flags: none
-        network_flags, i = self.decode_number(cmd, i, "B")
+        network_flags = self.decode_number("B")
         # data flags: away, hasLadder
-        data_flags, i = self.decode_number(cmd, i, "B")
+        data_flags = self.decode_number("B")
         player.away = data_flags & 1 > 0
         player.hasLadder = data_flags & 2 > 0
-        player.name, i = self.decode_string(cmd, i)
-        player.color, i = self.decode_color(cmd, i)
-        player.avatar, i = self.decode_number(cmd, i, "!H")
-        player.info, i = self.decode_string(cmd, i)
-        player.auth, i = self.decode_number(cmd, i, "!b")
-        teamcount, i = self.decode_number(cmd, i, "B")
+        player.name = self.decode_string()
+        player.color = self.decode_color()
+        player.avatar = self.decode_number("H")
+        player.info = self.decode_string()
+        player.auth = self.decode_number("b")
+        teamcount = self.decode_number("B")
         player.teams = []
         for k in range(teamcount):
-            tier, i = self.decode_string(cmd, i)
-            rating, i = self.decode_number(cmd, i, "!h")
+            tier = self.decode_string()
+            rating = self.decode_number("h")
             player.teams.append({'tier': tier, 'rating': rating})
-        return player, i
+        return player
 
-    def decode_TrainerTeam(self, cmd, i):
+    def decode_TrainerTeam(self):
         trainerteam = TrainerTeam()
-        trainerteam.nick, i = self.decode_string(cmd, i)
-        trainerteam.info, i = self.decode_string(cmd, i)
-        trainerteam.lose, i = self.decode_string(cmd, i)
-        trainerteam.win, i = self.decode_string(cmd, i)
-        trainerteam.avatar, i = self.decode_number(cmd, i, "!H")
-        trainerteam.defaultTier, i = self.decode_string(cmd, i)
-        trainerteam.team, i = self.decode_Team(cmd, i)
-        return (trainerteam, i)
+        trainerteam.nick = self.decode_string()
+        trainerteam.info = self.decode_string()
+        trainerteam.lose = self.decode_string()
+        trainerteam.win = self.decode_string()
+        trainerteam.avatar = self.decode_number("H")
+        trainerteam.defaultTier = self.decode_string()
+        trainerteam.team = self.decode_Team()
+        return trainerteam
 
     def decode_Team(self, cmd, i):
         team = Team()
@@ -252,6 +256,7 @@ class PODecoder(object):
             a.append(item)
         return a, i
      
+class POEncoder(object):
     #### ENCODING METHODS
 
     def encode_string(self, ustr):
@@ -329,25 +334,25 @@ class PODecoder(object):
             ret += struct.pack("!bbbbbb", *choice.pokeIndices)
         return ret
 
-class PORegistryClient(PODecoder):
+class PORegistryClient():
 
     def __init__(self):
         PODecoder.__init__(self)
 
     def stringReceived(self, string):
-        event = ord(string[0])
-        i = 1
+        decoder = PODecoder(string)
+        event = decoder.decode_number("B")
         if event == NetworkEvents['Announcement']:
-             ann, i = self.decode_string(string, i)
+             ann = decoder.decode_string()
              self.onAnnouncement(ann)
         if event == NetworkEvents["PlayersList"]:
-             name, i = self.decode_string(string, i)
-             desc, i = self.decode_string(string, i)
-             nump, i = self.decode_number(string, i, "h")
-             ip, i = self.decode_string(string, i)
-             maxp, i = self.decode_number(string, i, "h")
-             port, i = self.decode_number(string, i, "h")
-             protected, i = self.decode_number(string, i, "b")
+             name = decoder.decode_string()
+             desc = decoder.decode_string()
+             nump = decoder.decode_number("h")
+             ip = decoder.decode_string()
+             maxp = decoder.decode_number("h")
+             port = decoder.decode_number("h")
+             protected = decoder.decode_number("b")
              self.onPlayersList(name, desc, nump, ip, maxp, port, bool(protected))
         elif event == NetworkEvents["ServerListEnd"]:
              self.onServerListEnd()
@@ -387,7 +392,7 @@ def battleCommandParser(func):
     return onBattleCommand
         
 
-class POClient(PODecoder):
+class POClient(POEncoder):
     """
     Implements POProtocol
     """
@@ -396,8 +401,8 @@ class POClient(PODecoder):
         PODecoder.__init__(self)
 
     def stringReceived(self, cmd):
-        ev = struct.unpack("B", cmd[:1])[0] 
-        cmd = cmd[1:]
+        cmd = PODecoder(cmd)
+        ev = cmd.decode_number("B")
         evname = EventNames[ev] if 0 <= ev <= len(EventNames) else None
         if evname is None:
             self.on_ProtocolError(ev, cmd)
@@ -409,13 +414,13 @@ class POClient(PODecoder):
     def on_NotImplemented(self, ev, cmd):
         evname = EventNames[ev]
         print "Received command:", evname
-        print "Received", len(cmd), "bytes"
-        print tuple(ord(i) for i in cmd)
+        print "Received", len(cmd.cmd), "bytes"
+        print tuple(ord(i) for i in cmd.cmd)
 
     def on_ProtocolError(self, ev, cmd):
         print "Received unknown byte:", ev
-        print "Received", len(cmd), "bytes"
-        print tuple(ord(i) for i in cmd)
+        print "Received", len(cmd.cmd), "bytes"
+        print tuple(ord(i) for i in cmd.cmd)
 
     #### COMMANDS TO BE SENT TO SERVER
 
