@@ -61,6 +61,11 @@ class PODecoder(object):
             i += l
         return (s,i)
 
+    def decode_ProtocolVersion(self, cmd, i):
+        version, i = self.decode_number(cmd, i, "!H")
+        subversion, i = self.decode_number(cmd, i, "!H")
+        return ((version,subversion),i)
+
     def decode_color(self, cmd, i):
         color = Color()
         color.color_spec, i = self.decode_number(cmd, i, "!b")
@@ -77,20 +82,35 @@ class PODecoder(object):
         uid.subnum, i = self.decode_number(cmd, i, "!B")
         return (uid, i)
 
+    def decode_VersionControl(self, cmd, i):
+        l, i  = self.decode_number(cmd, i, "!H")
+        v, _ = self.decode_number(cmd, i, "B")
+        i += l
+        return {'version': v, 'data': cmd[i+1:i+l]}, i
+
     def decode_PlayerInfo(self, cmd, i):
+        version, i = self.decode_VersionControl(cmd, i)
+        if version['version'] != 0:
+            warn("PlayerInfo out of date")
         player = PlayerInfo()
         player.id, i = self.decode_number(cmd, i, "!i")
+        # network flags: none
+        network_flags, i = self.decode_number(cmd, i, "B")
+        # data flags: away, hasLadder
+        data_flags, i = self.decode_number(cmd, i, "B")
+        player.away = data_flags & 1 > 0
+        player.hasLadder = data_flags & 2 > 0
         player.name, i = self.decode_string(cmd, i)
+        player.color, i = self.decode_color(cmd, i)
+        player.avatar, i = self.decode_number(cmd, i, "!H")
         player.info, i = self.decode_string(cmd, i)
         player.auth, i = self.decode_number(cmd, i, "!b")
-        player.flags, i = self.decode_number(cmd, i, "!B")
-        player.rating, i = self.decode_number(cmd, i, "!h")
-        for k in range(6):
-            player.pokemon[k], i = self.decode_PokeUniqueId(cmd, i)
-        player.avatar, i = self.decode_number(cmd, i, "!H")
-        player.tier, i = self.decode_string(cmd, i)
-        player.color, i = self.decode_color(cmd, i)
-        player.gen, i = self.decode_number(cmd, i, "!B")
+        teamcount, i = self.decode_number(cmd, i, "B")
+        player.teams = []
+        for k in range(teamcount):
+            tier, i = self.decode_string(cmd, i)
+            rating, i = self.decode_number(cmd, i, "!h")
+            player.teams.append({'tier': tier, 'rating': rating})
         return player, i
 
     def decode_TrainerTeam(self, cmd, i):
@@ -223,6 +243,14 @@ class PODecoder(object):
         sbp.shiny, i = self.decode_bool(cmd, i)
         sbp.gender, i = self.decode_number(cmd, i, "B")
         return (sbp, i)
+
+    def decode_List(self, cmd, i, decode):
+        num, i = self.decode_number(cmd, i, "!I")
+        a = []
+        for j in range(num):
+            item, i = decode(cmd, i)
+            a.append(item)
+        return a, i
      
     #### ENCODING METHODS
 
@@ -234,6 +262,9 @@ class PODecoder(object):
     def encode_bytes(self, bytes):
         packed = struct.pack("!I", len(bytes)) + bytes
         return packed
+
+    def encode_ProtocolVersion(self, version, subversion):
+        return struct.pack("!HH", version, subversion)
 
     def encode_FullInfo(self, fullinfo):
         bytes = self.encode_TrainerTeam(fullinfo.team)
@@ -307,8 +338,8 @@ class PORegistryClient(PODecoder):
         event = ord(string[0])
         i = 1
         if event == NetworkEvents['Announcement']:
-             ann, _ = self.decode_string(string, i)
-             self.onRegistryAnnouncement(ann)
+             ann, i = self.decode_string(string, i)
+             self.onAnnouncement(ann)
         if event == NetworkEvents["PlayersList"]:
              name, i = self.decode_string(string, i)
              desc, i = self.decode_string(string, i)
@@ -321,7 +352,7 @@ class PORegistryClient(PODecoder):
         elif event == NetworkEvents["ServerListEnd"]:
              self.onServerListEnd()
 
-    def onRegistryAnnouncement(self, ann):
+    def onAnnouncement(self, ann):
         """
         Tells about global announcement
         """
@@ -388,9 +419,28 @@ class POClient(PODecoder):
 
     #### COMMANDS TO BE SENT TO SERVER
 
-    def login(self, fullinfo):
-        logindata=struct.pack('B', NetworkEvents['Login']) + self.encode_FullInfo(fullinfo)
-        self.send(logindata)
+    version = (0,0)
+
+    def login(self, name, **kwargs):
+        data =  struct.pack('B', NetworkEvents['Login'])
+        data += self.encode_ProtocolVersion(*self.version)
+        # hasClientType = (1 << 0)
+        # hasVersionNumber = (1 << 1)
+        # hasDefaultChannel = (1 << 3)
+        network_flags = struct.pack("!B", (1 << 0) | (1 << 1) | (1 << 3))
+        data += network_flags
+        data += self.encode_string(kwargs.get('clientType', u"python"))
+        data += struct.pack('!H', 0x200)
+        data += self.encode_string(name)
+        # wantsIdsWithMessages
+        data_flags = struct.pack("!B", 16)
+        data += data_flags
+        data += self.encode_string(kwargs.get('defaultChannel', u"default"))
+        print "Sending login packet of " + str(len(data)) + " bytes"
+        whole_packet = struct.pack('!I', len(data))+data
+        print "PACKET: [" + " ".join(str(ord(b)) for b in whole_packet) + "]"
+        print "Sent login packet of " + str(len(data)) + " bytes"
+        self.send(data)
 
     def sendMessage(self, message):
         tosend=struct.pack('B', NetworkEvents['SendMessage']) + self.encode_string(message)
@@ -473,7 +523,7 @@ class POClient(PODecoder):
         self.send(tosend)
 
     def send(self, data):
-        data = struct.pack('BB', len(data)/256, len(data)%256)+data
+        data = struct.pack('!I', len(data))+data
         self.native_send(data)
         
 
@@ -978,23 +1028,24 @@ class POClient(PODecoder):
     ### Events from connecting to server
 
     def on_VersionControl(self, cmd):
-        version, i = self.decode_string(cmd, 0)
-        self.onVersionControl(version)
-
-    def onVersionControl(self, version):
-        """
-        Event launched soon after connection is made
-        version : unicode - the server version
-        """
-
-    def on_ServerName(self, cmd):
+        current_version, i = self.decode_ProtocolVersion(cmd, 0)
+        hasZip, i = self.decode_number(cmd, i, "!B")
+        new_version, i = self.decode_ProtocolVersion(cmd, i)
+        compactability_version, i = self.decode_ProtocolVersion(cmd, i)
+        major_compactability_version, i = self.decode_ProtocolVersion(cmd, i)
         name, i = self.decode_string(cmd, 0)
-        self.onServerName(name)
+        # Really, ignore all the useless stuff it isn't needed by clients
+        if self.version < compactability_version:
+            print "VersionControl: EXCEPT PROBLEMS"
+        if self.version < major_compactability_version:
+            print "VersionControl: EXCEPT MAJOR PROBLEMS"
+        self.onVersionControl(current_version, name)
 
-    def onServerName(self, serverName):
+    def onVersionControl(self, version, name):
         """
         Event launched soon after connection is made
-        serverName : unicode - the server name
+        version : tuple - the server version
+        name : unicode - the name of server
         """
 
     def on_Register(self, cmd):
@@ -1010,7 +1061,11 @@ class POClient(PODecoder):
         self.onAskForPass(salt)
 
     def on_Login(self, cmd):
-        player, i = self.decode_PlayerInfo(cmd, 0)
+        hasReconnect, i = self.decode_number(cmd, 0, "B")
+        if hasReconnect > 0:
+            reconnectPass, i = self.decode_bytes(cmd, i)
+        player, i = self.decode_PlayerInfo(cmd, i)
+        tiers, i = self.decode_List(cmd, i, self.decode_string)
         self.onLogin(player)
 
     def onLogin(self, playerInfo):
@@ -1076,13 +1131,17 @@ class POClient(PODecoder):
         """
 
     def on_PlayersList(self, cmd):
-        player, i = self.decode_PlayerInfo(cmd, 0)
-        self.onPlayersList(player)
+        i = 0
+        players = []
+        while i < len(cmd):
+            player, i = self.decode_PlayerInfo(cmd, i)
+            players.append(player)
+        self.onPlayersList(players)
 
     def onPlayersList(self, playerInfo):
         """
         Event containing the info of a player. Sent after log in.
-        playerInfo : PlayerInfo - the info of the player
+        playerInfo : PlayerInfo - the info of the players, (list)
         """
 
     def on_PlayerBan(self, cmd):
@@ -1380,35 +1439,43 @@ class POClient(PODecoder):
         """
 
     def on_SendMessage(self, cmd):
-        message, i = self.decode_string(cmd, 0)
-        splitted = message.split(":", 1)
-        if len(splitted) == 2:
-            user = splitted[0]
-            msg = splitted[1].lstrip()
-            self.onSendMessage(user, msg)
-        else:
-            self.onSendMessage("", message)
+        network_flags, i = self.decode_number(cmd, 0, "B") 
+        hasChannel = network_flags & 1 > 0
+        hasId = network_flags & 2 > 0
+        data_flags, i = self.decode_number(cmd, i, "B") 
+        isHtml = data_flags & 1 > 0
+        kwargs = {'isHtml': isHtml, 'hasChannel': hasChannel, 'hasId': hasId}
+        if hasChannel: # hasChannel:
+            channel, i = self.decode_number(cmd, i, "!I")
+            kwargs['channel'] = channel
+        if hasId: # hasId:
+            id, i = self.decode_number(cmd, i, "!I")
+            kwargs['id'] = id
+        message, i = self.decode_string(cmd, i)
 
-    def onSendMessage(self, user, message):
+        if not hasId:
+            splitted = message.split(":", 1)
+            if len(splitted) == 2:
+                kwargs['user'] = splitted[0]
+                message = splitted[1].lstrip()
+            else:
+                kwargs['user'] = ""
+                
+        self.onSendMessage(message, **kwargs)
+
+    def onSendMessage(self, message, hasId=False, hasChannel=False, isHtml=False, id=0, channel=0, user=None):
         """
         Event telling us of a server wide message
-        user : unicode - the name of the user
         message - unicode : the real message
+        kwargs - 'hasId' -> if True also 'id'
+                 'hasChannel' -> if True also 'channel'
+                 'isHtml' -> true if should not be escaped
         """
 
-    def on_HtmlMessage(self, cmd):
-        html, i = self.decode_string(cmd, 0)
-        self.onHtmlMessage(html)
-
-    def onHtmlMessage(self, message):
-        """
-        Event telling us of a server wide HTML message
-        message - unicode : the HTML message
-        """
 NetworkEvents = {
-        'WhatAreYou': 0,
-        'WhoAreYou': 1,
-        'Login': 2,
+        'ZipCommand': 0,
+        'Login': 1,
+        'Reconnect': 2,
         'Logout': 3,
         'SendMessage': 4,
         'PlayersList': 5,
@@ -1436,9 +1503,6 @@ NetworkEvents = {
         'SpectateBattle': 27,
         'SpectatingBattleMessage': 28,
         'SpectatingBattleChat': 29,
-        'SpectatingBattleFinished': 30,
-        'LadderChange': 31,
-        'ShowTeamChange': 32,
         'VersionControl': 33,
         'TierSelection': 34,
         'ServMaxChange': 35,
@@ -1446,9 +1510,7 @@ NetworkEvents = {
         'ShowRankings': 37,
         'Announcement': 38,
         'CPTBan': 39,
-        'CPTUnban': 40,
         'PlayerTBan': 41,
-        'GetTBanList': 42,
         'BattleList': 43,
         'ChannelsList': 44,
         'ChannelPlayers': 45,
@@ -1457,17 +1519,15 @@ NetworkEvents = {
         'ChannelBattle': 48,
         'RemoveChannel': 49,
         'AddChannel': 50,
-        'ChannelMessage': 51,
         'ChanNameChange': 52,
-        'HtmlMessage': 53,
-        'HtmlChannel': 54,
         'ServerName': 55,
         'SpecialPass': 56,
         'ServerListEnd': 57,
         'SetIP': 58,
+        'ServerPass': 59
 }
 
-EventNames = [0] * len(NetworkEvents)
+EventNames = {}
 for name,number in NetworkEvents.iteritems():
     EventNames[number] = name;
 
@@ -1539,6 +1599,7 @@ BattleCommandNames = [0] * len(BattleCommands)
 for name,number in BattleCommands.iteritems():
     BattleCommandNames[number] = name;
 
+
 TempPokeChange = {
         'TempMove': 0,
         'TempAbility': 1,
@@ -1549,6 +1610,71 @@ TempPokeChange = {
         'DefMove': 6,
         'TempPP': 7
 }
+
+#class Flags(object):
+#    def __init__(self, *args):
+#        self.data = 0
+#        self.set(*args)
+#
+#    def set(self, *args):
+#        for arg in args:
+#            self.data |= (1 << self._bits_[arg])
+#        return self
+#
+#    def unset(self, *args):
+#        for arg in args:
+#            self.data &= ~(1 << self._bits_[arg])
+#        return self
+#
+#    def encode(self):
+#        i = 0
+#        b = []
+#        while i == 0 or self.data >> (i*8):
+#            c = self.data >> (i*8)
+#            if (self.data >> ((i+1)*8)
+#                c |= 1 << 7
+#            b.append(struct.pack("B", c)
+#            i+=1
+#        return "".join(b)
+
+#    def decode(self, data):
+#        self.data = 0
+#        i = 0
+#        c = 0
+#        while i == 0 or c & (1 << 7):
+#            i+=1
+
+#class NetworkFlags_bits(Flags):
+#    _bits_ = {
+#      'hasClientType': 0,
+#      'hasVersionNumber': 1,
+#      'hasReconnect': 2,
+#      'hasDefaultChannel': 3,
+#      'hasAdditionalChannels': 4,
+#      'hasColor': 5,
+#      'hasTrainerInfo': 6,
+#      'marker1': 7,
+#      'hasTeams': 8,
+#      'hasEventSpecification': 9,
+#      'hasPluginList': 10
+#    }
+#class NetworkFlags(ctypes.Union):
+#    _fields_ = [("b", NetworkFlags_bits),
+#                ("asbytes", c_uint16)]
+#    def __init__(self):
+#        self.b.marker1 = True
+
+#class DataFlags_bits(ctypes.BigEndianStructure):
+#    _fields_ = [
+#      ('supportsZipCompression', c_uint8, 1),
+#      ('showTeam', c_uint8, 1),
+#      ('isLadderEnabled', c_uint8, 1),
+#      ('isIdle', c_uint8, 1),
+#      ('wantsIdsWithMessage', c_uint8, 1)
+#    ]
+#class DataFlags(ctypes.Union):
+#    _fields_ = [("b", DataFlags_bits),
+#                ("asbytes", c_uint8)]
 
 ### Structs used in Pokemon Online Protocol
 
