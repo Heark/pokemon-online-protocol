@@ -52,6 +52,15 @@ class PODecoder(object):
         self.i+=l
         return n
 
+    def decode_flags(cmd):
+        flags = 0
+        while True:
+            b = self.decode_number("B")
+            flags = (flags << 8) + b
+            if b % 128 == 0:
+                 break
+        return flags
+
     def decode_bool(self):
         b = self.decode_number("B")
         return b > 0
@@ -90,8 +99,8 @@ class PODecoder(object):
         color.pad = self.decode_number("H")
         return color
 
-    def decode_PokeUniqueId(self):
-        uid = PokeUniqueId()
+    def decode_pokeid(self):
+        uid = pokeid()
         uid.pokenum = self.decode_number("H")
         uid.subnum = self.decode_number("B")
         return uid
@@ -101,9 +110,9 @@ class PODecoder(object):
         player = PlayerInfo()
         player.id = self.decode_number("i")
         # network flags: none
-        network_flags = self.decode_number("B")
+        network_flags = self.decode_flags()
         # data flags: away, hasLadder
-        data_flags = self.decode_number("B")
+        data_flags = self.decode_flags()
         player.away = data_flags & 1 > 0
         player.hasLadder = data_flags & 2 > 0
         player.name = self.decode_string()
@@ -119,97 +128,135 @@ class PODecoder(object):
             player.teams.append({'tier': tier, 'rating': rating})
         return player
 
-    def decode_TrainerTeam(self):
-        trainerteam = TrainerTeam()
-        trainerteam.nick = self.decode_string()
-        trainerteam.info = self.decode_string()
-        trainerteam.lose = self.decode_string()
-        trainerteam.win = self.decode_string()
-        trainerteam.avatar = self.decode_number("H")
-        trainerteam.defaultTier = self.decode_string()
-        trainerteam.team = self.decode_Team()
-        return trainerteam
+    @version_controlled(0)
+    def decode_TrainerInfo(self):
+        trainerinfo = TrainerInfo()
+        network_flags = self.decode_flags()
+        hasBattleMessage = network_flags & 1 > 0
+        trainerinfo.avatar = self.decode_number("H")
+        trainerinfo.info = self.decode_string()
+        if hasBattleMessages:
+            trainerinfo.lose = self.decode_string()
+            trainerinfo.win = self.decode_string()
+            trainerinfo.tie = self.decode_string()
+        return trainerinfo
 
+    @version_controlled(0)
     def decode_Team(self, cmd, i):
         team = Team()
-        team.gen, i = self.decode_number(cmd, i, "B")
-        for k in xrange(6):
-            team.poke[k], i = self.decode_PokePersonal(cmd, i)
-        return (team, i)
+        network_flags = self.decode_flags()
+        hasDefaultTier = flags & 1  > 0
+        hasNumberOfPokemon = flags & 2 > 0
+        if hasDefaultTier:
+            team.defaultTier = self.decode_string()
+        team.gen = self.decode_gen()
+        pokes = self.decode_number("B") if hasNumberOfPokemon else 6
+        for k in xrange(pokes):
+            team.poke[k] = self.decode_PokePersonal(team.gen)
+        return team
 
-    def decode_PokePersonal(self, cmd, i):
+    @version_controlled(0)
+    def decode_PokePersonal(self, gen=5):
         poke = PokePersonal()
-        poke.uniqueid, i = self.decode_PokeUniqueId(cmd, i)
-        poke.nickname, i = self.decode_string(cmd, i)
-        poke.item, i = self.decode_number(cmd, i, "!H")
-        poke.ability, i = self.decode_number(cmd, i, "!H")
-        poke.nature, i = self.decode_number(cmd, i, "B")
-        poke.gender, i = self.decode_number(cmd, i, "B")
-        shiny, i = self.decode_number(cmd, i, "B")
-        poke.shiny = shiny > 0
-        poke.happiness, i = self.decode_number(cmd, i, "B")
-        poke.level, i = self.decode_number(cmd, i, "B")
-        #poke.gen, i = self.decode_number(cmd, i, "B")
+        network_flags = self.decode_flags()
+        hasGen = network_flags & 1 > 0
+        hasNickname > network_flags & 2 > 0
+        hasPokeball > network_flags & 4 > 0
+        hasHappiness > network_flags & 8 > 0
+        hasPPups > network_flags & 16 > 0
+        hasIVs > network_flags & 32 > 0
+        poke.gen = self.decode_gen() if hasGen else gen
+        poke.pokeid = self.decode_pokeid()
+        poke.level= self.decode_number("B")
+        data_flags = self.decode_flags()
+        poke.isShiny = data_flags & 1 > 0
+        if hasNickname:
+            poke.nickname = self.decode_string()
+        if hasPokeball:
+            poke.ball = self.decode_number("H")
+        if poke.gen >= 2:
+            poke.item = self.decode_number("H")
+            if poke.gen >= 3:
+                poke.ability = self.decode_number("H")
+                poke.nature = self.decode_number("B")
+            poke.gender = self.decode_number("B")
+            if hasHappiness:
+                poke.happiness = self.decode_number("B")
+        if hasPPups:
+            poke.ppups = self.decode_number("B")
         for k in xrange(4):
             poke.move[k], i = self.decode_number(cmd, i, "!I")
         for k in xrange(6):
-            poke.dv[k], i = self.decode_number(cmd, i, "B")
+            poke.dv[k] = self.decode_number("B")
         for k in xrange(6):
-            poke.ev[k], i = self.decode_number(cmd, i, "B")
-        return (poke, i)
+            poke.ev[k] = self.decode_number("B") if hasIVs else 31
+        return poke
 
-    def decode_ChallengeInfo(self, cmd, i):
+    def decode_ChallengeInfo(self):
         c = ChallengeInfo()
-        c.dsc, i = self.decode_number(cmd, i, "b")
-        c.opp, i = self.decode_number(cmd, i, "!i")
-        c.clauses, i = self.decode_number(cmd, i, "!I")
-        c.mode, i = self.decode_number(cmd, i, "B")
-        return (c, i)
+        c.description = self.decode_number("b")
+        c.playerId = self.decode_number("i")
+        c.clauses = self.decode_number("I")
+        c.mode = self.decode_number("B")
+        c.team = self.decode_number("B")
+        c.gen = self.decode_gen()
+        c.srctier = self.decode_string()
+        c.desttier = self.decode_string()
+        return c
 
-    def decode_BattleConfiguration(self, cmd, i):
+    def decode_BattleConfiguration(self):
         bc = BattleConfiguration()
-        bc.gen, i = self.decode_number(cmd, i, "B")
-        bc.mode, i = self.decode_number(cmd, i, "B")
-        bc.id[0], i = self.decode_number(cmd, i, "!i")
-        bc.id[1], i = self.decode_number(cmd, i, "!i")
-        bc.clauses, i = self.decode_number(cmd, i, "!I")
-        return (bc, i)
+        network_flags = self.decode_flags()
+        hasNumberOfIds = network_flags & 1 > 0
+        data_flags = self.decode_flags()
+        bc.isRated = data_flags & 1 > 0
+        bc.gen = self.decode_gen()
+        bc.mode = self.decode_number("B")
+        bc.clauses = self.decode_number("I")
+        numberOfIds = self.decode_number("B") if hasNumberOfIds else 2
+        bc.id=[]
+        for k in range(numberOfIds):
+            bc.id.append(self.decode_number("i"))
+        return bc
 
-    def decode_TeamBattle(self, cmd, i):
+    def decode_TeamBattle(self):
         tb = TeamBattle()
         for k in xrange(6):
-            tb.m_pokemons[k], i = self.decode_PokeBattle(cmd, i)
-        return (tb, i)
+            tb.m_pokemons[k] = self.decode_PokeBattle()
+        return tb
 
-    def decode_PokeBattle(self, cmd, i):
+    @version_controlled(0)
+    def decode_PokeBattle(self):
         pb = PokeBattle()
-        pb.num, i = self.decode_PokeUniqueId(cmd, i)
-        pb.nick, i = self.decode_string(cmd, i)
-        pb.totalLifePoints, i = self.decode_number(cmd, i, "!H")
-        pb.lifePoints, i = self.decode_number(cmd, i, "!H")
-        pb.gender, i = self.decode_number(cmd, i, "B")
-        shiny, i = self.decode_number(cmd, i, "B")
-        pb.shiny = shiny > 0
-        pb.level, i = self.decode_number(cmd, i, "B")
-        pb.item, i = self.decode_number(cmd, i, "!H")
-        pb.ability, i = self.decode_number(cmd, i, "!H")
-        pb.happiness, i = self.decode_number(cmd, i, "B")
+        pb.num = self.decode_pokeid()
+        data_flags = self.decode_flags()
+        pb.isShiny = data_flags & 1 > 0
+        pb.nick = self.decode_string()
+        pb.totalLifePoints = self.decode_number("H")
+        pb.lifePoints = self.decode_number("H")
+        pb.gender = self.decode_number("B")
+        pb.level = self.decode_number("B")
+        pb.item = self.decode_number("H")
+        pb.ability = self.decode_number("H")
+        pb.happiness = self.decode_number("B")
         for k in xrange(5):
-            pb.normal_stats[k], i = self.decode_number(cmd, i, "!H")
+            pb.normal_stats[k] = self.decode_number("H")
         for k in xrange(4):
-            pb.move[k], i = self.decode_BattleMove(cmd, i)
+            pb.move[k] = self.decode_BattleMove()
         for k in xrange(6):
-            pb.evs[k], i = self.decode_number(cmd, i, "!i")
+            pb.evs[k] = self.decode_number("B")
         for k in xrange(6):
-            pb.dvs[k], i = self.decode_number(cmd, i, "!i")
-        return (pb, i)
+            pb.dvs[k] = self.decode_number("B")
+        return pb
 
+    # STILL IN OLD FORMAT
     def decode_ShallowShownTeam(self, cmd, i):
         t = ShallowShownTeam()
         for k in xrange(6):
             t.pokes[k] = self.decode_ShallowShownPoke(cmd, i)
         return t
 
+    # STILL IN OLD FORMAT
     def decode_ShallowShownPoke(self, cmd, i):
         poke = ShallowShownPoke()
         poke.num, i = self.decode_PokeUniqueId(cmd, i)
@@ -219,19 +266,21 @@ class PODecoder(object):
         self.item = has_item > 0
         return poke
 
-    def decode_BattleMove(self, cmd, i):
+    def decode_BattleMove(self):
         bm = BattleMove()
-        bm.num, i = self.decode_number(cmd, i, "H")
-        bm.PP, i = self.decode_number(cmd, i, "B")
-        bm.totalPP, i = self.decode_number(cmd, i, "B")
-        return (bm, i)
+        bm.movenum = self.decode_number("H")
+        bm.PPs = self.decode_number("B")
+        bm.totalPPs = self.decode_number("B")
+        return bm
 
+    # STILL IN OLD FORMAT
     def decode_BattleStats(self, cmd, i):
         stats = BattleStats()
         for k in xrange(5):
             stats.stats[k], i = self.decode_number(cmd, i, "h")
         return (stats, i)
 
+    # STILL IN OLD FORMAT
     def decode_BattleDynamicInfo(self, cmd, i):
         info = BattleDynamicInfo()
         for k in xrange(7):
@@ -239,6 +288,7 @@ class PODecoder(object):
         info.flags, i = self.decode_number(cmd, i, "B")
         return (info, i)
 
+    # STILL IN OLD FORMAT
     def decode_ShallowBattlePoke(self, cmd, i):
         sbp = ShallowBattlePoke()
         sbp.num, i = self.decode_PokeUniqueId(cmd, i)
@@ -250,13 +300,13 @@ class PODecoder(object):
         sbp.gender, i = self.decode_number(cmd, i, "B")
         return (sbp, i)
 
-    def decode_List(self, cmd, i, decode):
-        num, i = self.decode_number(cmd, i, "!I")
+    def decode_List(self, decode_fun):
+        num = self.decode_number("I")
         a = []
         for j in range(num):
-            item, i = decode(cmd, i)
+            item = decode(self)
             a.append(item)
-        return a, i
+        return a
      
 class POEncoder(object):
 
