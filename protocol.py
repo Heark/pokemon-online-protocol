@@ -27,10 +27,12 @@ def version_controlled(version):
             res = func(self, *args)
             self.i = j+structure_length
             return res
+        return wrapped
+    return decorator
 
 class PODecoder(object):
 
-    def __init__(self):
+    def __init__(self, cmd):
         self.codec = codecs.lookup("utf_8")
         self.i = 0
         self.cmd = cmd
@@ -257,6 +259,10 @@ class PODecoder(object):
         return a, i
      
 class POEncoder(object):
+
+    def __init__(self):
+        self.codec = codecs.lookup("utf_8")
+
     #### ENCODING METHODS
 
     def encode_string(self, ustr):
@@ -334,10 +340,7 @@ class POEncoder(object):
             ret += struct.pack("!bbbbbb", *choice.pokeIndices)
         return ret
 
-class PORegistryClient():
-
-    def __init__(self):
-        PODecoder.__init__(self)
+class PORegistryClient(object):
 
     def stringReceived(self, string):
         decoder = PODecoder(string)
@@ -396,9 +399,6 @@ class POClient(POEncoder):
     """
     Implements POProtocol
     """
-
-    def __init__(self):
-        PODecoder.__init__(self)
 
     def stringReceived(self, cmd):
         cmd = PODecoder(cmd)
@@ -1033,12 +1033,12 @@ class POClient(POEncoder):
     ### Events from connecting to server
 
     def on_VersionControl(self, cmd):
-        current_version, i = self.decode_ProtocolVersion(cmd, 0)
-        hasZip, i = self.decode_number(cmd, i, "!B")
-        new_version, i = self.decode_ProtocolVersion(cmd, i)
-        compactability_version, i = self.decode_ProtocolVersion(cmd, i)
-        major_compactability_version, i = self.decode_ProtocolVersion(cmd, i)
-        name, i = self.decode_string(cmd, 0)
+        current_version = cmd.decode_ProtocolVersion()
+        hasZip = cmd.decode_number("B")
+        new_version = self.decode_ProtocolVersion()
+        compactability_version = self.decode_ProtocolVersion()
+        major_compactability_version = cmd.decode_ProtocolVersion()
+        name = cmd.decode_string()
         # Really, ignore all the useless stuff it isn't needed by clients
         if self.version < compactability_version:
             print "VersionControl: EXCEPT PROBLEMS"
@@ -1062,15 +1062,15 @@ class POClient(POEncoder):
         """
 
     def on_AskForPass(self, cmd):
-        salt, i = self.decode_string(cmd, 0)
+        salt = cmd.decode_string()
         self.onAskForPass(salt)
 
     def on_Login(self, cmd):
-        hasReconnect, i = self.decode_number(cmd, 0, "B")
+        hasReconnect = cmd.decode_number("B")
         if hasReconnect > 0:
-            reconnectPass, i = self.decode_bytes(cmd, i)
-        player, i = self.decode_PlayerInfo(cmd, i)
-        tiers, i = self.decode_List(cmd, i, self.decode_string)
+            reconnectPass = cmd.decode_bytes()
+        player = cmd.decode_PlayerInfo()
+        tiers = cmd.decode_List(cmd.decode_string)
         self.onLogin(player)
 
     def onLogin(self, playerInfo):
@@ -1080,7 +1080,7 @@ class POClient(POEncoder):
         """
 
     def on_Logout(self, cmd):
-        playerid, i = self.decode_number(cmd, 0, "!i")
+        playerid = cmd.decode_number("i")
         self.onLogout(playerid)
 
     def onLogout(self, playerid):
@@ -1090,7 +1090,7 @@ class POClient(POEncoder):
         """
 
     def on_Announcement(self, cmd):
-        announcement, i = self.decode_string(cmd, 0)
+        announcement = cmd.decode_string()
         self.onAnnouncement(announcement)
 
     def onAnnouncement(self, announcement):
