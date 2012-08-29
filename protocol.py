@@ -2,8 +2,8 @@
 # Pokemon Online protocol implemented in python
 #
 # (c) Toni Fadjukoff 2011 - 2012
-# Licensed under GPL 3.
-# See LICENSE.txt for details
+# Licensed under BSD-style license.
+# See LICENSE for details
 
 import time
 import socket
